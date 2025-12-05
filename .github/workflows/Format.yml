@@ -1,0 +1,32 @@
+name: Format
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  format:
+    name: Julia Formatter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - name: Install JuliaFormatter
+        run: julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
+      - name: Format check
+        run: |
+          julia -e '
+            using JuliaFormatter
+            result = format(".", verbose=true)
+            if result
+              println("Formatting check passed!")
+              exit(0)
+            else
+              println("Formatting check failed. Please run JuliaFormatter locally.")
+              exit(1)
+            end
+          '
