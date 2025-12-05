@@ -988,11 +988,11 @@ function stderror(cov::LocalProjectionCovariance; term::Symbol)
 end
 
 """
-    plot(lp, cov; term = lp.shock, levels = [0.95], kwargs...)
+    Plots.plot(lp, cov; term = lp.shock, levels = [0.95], kwargs...)
 
 Display the impulse response with shaded confidence intervals given by `levels`.
 """
-function plot(lp::LocalProjection, cov::LocalProjectionCovariance; term::Symbol=lp.shock, levels::AbstractVector{<:Real}=[0.95], scale::Real=1.0, kwargs...)
+function Plots.plot(lp::LocalProjection, cov::LocalProjectionCovariance; term::Symbol=lp.shock, levels::AbstractVector{<:Real}=[0.95], scale::Real=1.0, kwargs...)
     beta = coefpath(lp; term=term).*scale
     se = stderror(cov; term=term).*scale
     horizons = collect(0:lp.horizon)
@@ -1014,9 +1014,9 @@ function plot(lp::LocalProjection, cov::LocalProjectionCovariance; term::Symbol=
     return plt
 end
 
-function plot(lp::LocalProjection, estimator::CovarianceMatrices.AbstractAsymptoticVarianceEstimator; kwargs...)
+function Plots.plot(lp::LocalProjection, estimator::CovarianceMatrices.AbstractAsymptoticVarianceEstimator; kwargs...)
     vcovs = vcov(estimator, lp)
-    plot(lp, vcovs; kwargs...)
+    Plots.plot(lp, vcovs; kwargs...)
 end
 
 
