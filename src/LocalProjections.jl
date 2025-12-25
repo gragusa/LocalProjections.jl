@@ -13,7 +13,7 @@ using GLM: LinearModel
 using CovarianceMatrices
 using Statistics
 using Distributions
-using Plots
+using RecipesBase
 using ShiftedArrays: lag, lead
 using StatsBase
 using Missings
@@ -987,36 +987,107 @@ function stderror(cov::LocalProjectionCovariance; term::Symbol)
     return sqrt.(variances)
 end
 
+# ============================================================================
+# Plot Recipes using RecipesBase
+# ============================================================================
+
 """
-    Plots.plot(lp, cov; term = lp.shock, levels = [0.95], kwargs...)
+    IRFPlot
 
-Display the impulse response with shaded confidence intervals given by `levels`.
+Internal wrapper type for dispatching plot recipes on LocalProjection with covariance.
+Users should call `plot(lp, cov; ...)` or `plot(lp, estimator; ...)` directly.
 """
-function Plots.plot(lp::LocalProjection, cov::LocalProjectionCovariance; term::Symbol=lp.shock, levels::AbstractVector{<:Real}=[0.95], scale::Real=1.0, kwargs...)
-    beta = coefpath(lp; term=term).*scale
-    se = stderror(cov; term=term).*scale
-    horizons = collect(0:lp.horizon)
-
-    sorted_levels = sort(levels)
-    plt = Plots.plot(horizons, beta; label="IRF", color=:black, linewidth=2, kwargs...)
-
-    base_alpha = 0.55
-    for (idx, level) in enumerate(sorted_levels)
-        (level <= 0 || level >= 1) && throw(ArgumentError("levels must be in (0, 1)"))
-        z = quantile(Normal(), 0.5 + level / 2)
-        band = z .* se
-        alpha = max(0.15, base_alpha - 0.12 * (idx - 1))
-        label = idx == length(sorted_levels) ? "CI $(round(level * 100; digits=2))%" : ""
-        Plots.plot!(plt, horizons, beta; ribbon=band, kwargs...)
-    end
-
-    Plots.plot!(plt; xlabel="Horizon", ylabel=String(term), kwargs...)
-    return plt
+struct IRFPlot{M<:LinearModel, E}
+    lp::LocalProjection{M}
+    cov::LocalProjectionCovariance{E}
+    term::Symbol
+    levels::Vector{Float64}
+    irf_scale::Float64
 end
 
-function Plots.plot(lp::LocalProjection, estimator::CovarianceMatrices.AbstractAsymptoticVarianceEstimator; kwargs...)
-    vcovs = vcov(estimator, lp)
-    Plots.plot(lp, vcovs; kwargs...)
+"""
+    plot(lp, cov; term=lp.shock, levels=[0.95], irf_scale=1.0, kwargs...)
+    plot(lp, estimator; term=lp.shock, levels=[0.95], irf_scale=1.0, kwargs...)
+
+Plot impulse response function with confidence bands.
+
+# Arguments
+- `lp::LocalProjection`: The estimated local projection
+- `cov::LocalProjectionCovariance` or `estimator`: Covariance object or estimator (e.g., `HR1()`, `Bartlett(bw)`)
+- `term::Symbol`: Which coefficient to plot (default: `lp.shock`)
+- `levels::Vector`: Confidence levels for bands (default: `[0.95]`)
+- `irf_scale::Real`: Multiplicative scale factor for IRF values (default: `1.0`, use `100` for percentage)
+
+All other keyword arguments (e.g., `title`, `titlefontsize`, `color`, `fillcolor`, `fillalpha`,
+`linewidth`, `xlabel`, `ylabel`, `legend`) are passed through to Plots.
+
+# Example
+```julia
+lp_result = lp(@formula(leads(y) ~ x), df; horizon=12)
+plot(lp_result, HR1(); levels=[0.68, 0.90], irf_scale=100, title="IRF", titlefontsize=12)
+```
+"""
+@recipe function f(wrapper::IRFPlot)
+    lp = wrapper.lp
+    cov = wrapper.cov
+    term = wrapper.term
+    levels = wrapper.levels
+    irf_scale = wrapper.irf_scale
+
+    beta = coefpath(lp; term=term) .* irf_scale
+    se = stderror(cov; term=term) .* irf_scale
+    horizons = collect(0:lp.horizon)
+
+    # Validate levels
+    sorted_levels = sort(levels; rev=true)  # Widest band first for proper layering
+    for level in sorted_levels
+        (level <= 0 || level >= 1) && throw(ArgumentError("levels must be in (0, 1)"))
+    end
+
+    # Compute ribbon for widest confidence band (will be drawn first/bottom)
+    z_max = quantile(Normal(), 0.5 + sorted_levels[1] / 2)
+    ribbon_max = z_max .* se
+
+    # Set default plot attributes (user can override with -->)
+    xlabel --> "Horizon"
+    ylabel --> String(term)
+    label --> "IRF"
+    linewidth --> 2
+    fillalpha --> 0.3
+    legend --> :best
+
+    # For multiple confidence levels, add inner bands as additional series
+    if length(sorted_levels) > 1
+        for (idx, level) in enumerate(sorted_levels[2:end])
+            @series begin
+                z = quantile(Normal(), 0.5 + level / 2)
+                band = z .* se
+                ribbon := band
+                fillalpha := 0.3 + 0.15 * idx  # Darker for inner bands
+                label := ""  # No legend for inner bands
+                linewidth := 0  # No line for inner bands
+                linecolor := :transparent
+                horizons, beta
+            end
+        end
+    end
+
+    # Return main series with widest ribbon (drawn last, on top)
+    ribbon --> ribbon_max
+    return horizons, beta
+end
+
+# Recipe for LocalProjection + LocalProjectionCovariance
+@recipe function f(lp::LocalProjection, cov::LocalProjectionCovariance;
+                   term=lp.shock, levels=[0.95], irf_scale=1.0)
+    IRFPlot(lp, cov, term, Float64.(levels), Float64(irf_scale))
+end
+
+# Recipe for LocalProjection + covariance estimator
+@recipe function f(lp::LocalProjection, estimator::CovarianceMatrices.AbstractAsymptoticVarianceEstimator;
+                   term=lp.shock, levels=[0.95], irf_scale=1.0)
+    cov = vcov(estimator, lp)
+    IRFPlot(lp, cov, term, Float64.(levels), Float64(irf_scale))
 end
 
 
