@@ -1,36 +1,38 @@
-name: Format
+name: Auto-format (pushes in repo)
 
 on:
-  pull_request:
   push:
-    branches:
-      - main
-      - master
+    branches: ["**"] # or ['main', 'develop', 'feature/**']
+
+permissions:
+  contents: write
 
 jobs:
-  format:
-    name: Julia Formatter
+  format-fix:
+    if: "!contains(github.event.head_commit.message, 'auto-format with JuliaFormatter')"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: actions/checkout@v5
         with:
-          version: "1"
+          fetch-depth: 0
+
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+
       - name: Install JuliaFormatter
+        run: julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
+
+      - name: Run formatter (sciml)
+        run: julia -e 'using JuliaFormatter; format(".", verbose=true)'
+
+      - name: Commit & push if changed
         run: |
-          julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
-      - name: Format check
-        run: |
-          julia -e '
-          using JuliaFormatter
-          # Format src/ and test/ directories
-          result = format(".", verbose=true)
-          if result
-              println("All files are formatted correctly!")
-              exit(0)
-          else
-              println("Some files need formatting. Run locally:")
-              println("  julia -e ''using JuliaFormatter; format(\".\")''")
-              exit(1)
-          end
-          '
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: auto-format with JuliaFormatter (sciml)"
+            git push
+          fi
