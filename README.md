@@ -1,6 +1,6 @@
 # LocalProjections.jl
 
-[![Build Status](https://github.com/USERNAME/LocalProjections.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/USERNAME/LocalProjections.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Build Status](https://github.com/gragusa/LocalProjections.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/gragusa/LocalProjections.jl/actions/workflows/CI.yml?query=branch%3Amain)
 
 Estimate local projection impulse response functions using horizon-specific linear regressions.
 
@@ -8,7 +8,7 @@ Estimate local projection impulse response functions using horizon-specific line
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/USERNAME/LocalProjections.jl")
+Pkg.add(url="https://github.com/gragusa/LocalProjections.jl")
 ```
 
 ## Example
