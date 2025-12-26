@@ -13,9 +13,9 @@ makedocs(
         "Tutorials" => [
             "Getting Started" => "tutorials/basic.md",
             "Transformations" => "tutorials/transformations.md",
-            "Inference and Plotting" => "tutorials/inference.md",
+            "Inference and Plotting" => "tutorials/inference.md"
         ],
-        "API Reference" => "api.md",
+        "API Reference" => "api.md"
     ]
 )
 
