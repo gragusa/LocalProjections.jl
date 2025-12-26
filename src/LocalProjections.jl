@@ -1,15 +1,16 @@
 module LocalProjections
 
-export LocalProjection, LocalProjectionCovariance
-export lp, coefpath, stderror, vcov
+export LocalProjection, LocalProjectionCovariance, IRFSummary
+export lp, coefpath, stderror, vcov, summarize
 export lag, lead, cumul, CumulTerm, lags, leads, LeadTerm, anchor, AnchorTerm
 
 using DataFrames
+using PrettyTables: pretty_table, TextHighlighter, TextTableFormat, text_table_borders__unicode_rounded, fmt__round, @crayon_str
 using Tables
 using StatsModels
 using StatsModels: AbstractTerm, Term, FunctionTerm, ConstantTerm, FormulaTerm, ContinuousTerm, coefnames
-using GLM
-using GLM: LinearModel
+using Regress
+using Regress: OLSMatrixEstimator, ols
 using CovarianceMatrices
 using Statistics
 using Distributions
@@ -523,7 +524,7 @@ end
 
 Stack of horizon-specific OLS models produced by [`lp`](@ref).
 """
-struct LocalProjection{M<:LinearModel}
+struct LocalProjection{M<:OLSMatrixEstimator}
     models::Vector{M}
     horizon::Int
     response::Symbol
@@ -556,7 +557,7 @@ function model_summary(lp::LocalProjection, h::Int)
     m = lp.models[h + 1]
     names = lp.coef_names[h + 1]
     coefs = coef(m)
-    se = GLM.stderror(m)
+    se = stderror(HC1(), m)
 
     println("Local Projection at horizon $h")
     println("=" ^ 60)
@@ -890,7 +891,8 @@ function lp(formula::FormulaTerm, data::AbstractDataFrame; horizon::Integer, sho
     X_missing_ind = vec(all(!isnan, X, dims=2))
 
     # Pre-allocate storage for models and coefficient names
-    models = Vector{LinearModel}(undef, horizon + 1)
+    # Use Any for initial allocation; concrete type will be inferred at struct construction
+    models = Vector{Any}(undef, horizon + 1)
     coef_names_vec = Vector{Vector{String}}(undef, horizon + 1)
 
     # ========================================================================
@@ -920,7 +922,7 @@ function lp(formula::FormulaTerm, data::AbstractDataFrame; horizon::Integer, sho
         x = view(X, complete_rows, :)
 
         # Fit model using matrix form
-        model = lm(x, y)
+        model = ols(x, y)
         models[i] = model
 
         # Use pre-computed coefficient names (constant across horizons)
@@ -931,7 +933,9 @@ function lp(formula::FormulaTerm, data::AbstractDataFrame; horizon::Integer, sho
         shock_symbol in available || throw(ArgumentError("shock term $(shock_symbol) not present in model for horizon $h"))
     end
 
-    return LocalProjection(models, horizon, response, shock_symbol, formula, coef_names_vec)
+    # Convert to properly typed vector for struct construction
+    typed_models = [m for m in models]
+    return LocalProjection(typed_models, horizon, response, shock_symbol, formula, coef_names_vec)
 end
 
 """
@@ -987,6 +991,142 @@ function stderror(cov::LocalProjectionCovariance; term::Symbol)
     return sqrt.(variances)
 end
 
+"""
+    IRFSummary
+
+Summary of impulse response function with coefficients, standard errors,
+and confidence intervals. Displays with PrettyTables, highlighting
+statistically significant coefficients in bold.
+"""
+struct IRFSummary
+    term::Symbol
+    level::Float64
+    scale::Float64
+    horizon::Vector{Int}
+    coef::Vector{Float64}
+    se::Vector{Float64}
+    lower::Vector{Float64}
+    upper::Vector{Float64}
+end
+
+# Convert to DataFrame for data access
+function DataFrames.DataFrame(s::IRFSummary)
+    DataFrame(
+        horizon = s.horizon,
+        coef = s.coef,
+        se = s.se,
+        lower = s.lower,
+        upper = s.upper
+    )
+end
+
+function Base.show(io::IO, s::IRFSummary)
+    println(io, "IRFSummary(term=$(s.term), level=$(s.level), scale=$(s.scale))")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", s::IRFSummary)
+    # Determine significance: CI doesn't include zero
+    significant = (s.lower .> 0) .| (s.upper .< 0)
+
+    # Create data matrix for PrettyTables
+    data = hcat(s.horizon, s.coef, s.se, s.lower, s.upper)
+
+    # Format the level as percentage
+    level_pct = round(Int, s.level * 100)
+
+    # Column labels (PrettyTables v3 API)
+    labels = ["Horizon", "Coef", "Std.Err.", "Lower $level_pct%", "Upper $level_pct%"]
+
+    # Highlighters for bold significant values (PrettyTables v3 API)
+    # Make coef, lower, upper bold when significant
+    hl_coef = TextHighlighter(
+        (d, i, j) -> j == 2 && significant[i],
+        crayon"bold"
+    )
+    hl_lower = TextHighlighter(
+        (d, i, j) -> j == 4 && significant[i],
+        crayon"bold"
+    )
+    hl_upper = TextHighlighter(
+        (d, i, j) -> j == 5 && significant[i],
+        crayon"bold"
+    )
+
+    # Title
+    title = "Impulse Response: $(s.term)"
+    if s.scale != 1.0
+        title *= " (scale=$(s.scale))"
+    end
+
+    # Table format with rounded borders
+    table_fmt = TextTableFormat(borders = text_table_borders__unicode_rounded)
+
+    # Enable color output for ANSI bold codes
+    ioc = IOContext(io, :color => true)
+
+    pretty_table(ioc, data;
+        column_labels = labels,
+        title = title,
+        highlighters = [hl_coef, hl_lower, hl_upper],
+        formatters = [fmt__round(4)],
+        alignment = [:r, :r, :r, :r, :r],
+        table_format = table_fmt
+    )
+end
+
+"""
+    summarize(lp, cov; term=lp.shock, level=0.95, scale=1.0) -> IRFSummary
+
+Create a summary table of impulse response coefficients with standard errors
+and confidence intervals. Statistically significant coefficients (where the
+confidence interval excludes zero) are displayed in bold.
+
+# Arguments
+- `lp::LocalProjection`: The estimated local projection
+- `cov::LocalProjectionCovariance`: Covariance object from vcov()
+- `term::Symbol`: Which coefficient to summarize (default: `lp.shock`)
+- `level::Real`: Confidence level for intervals (default: 0.95)
+- `scale::Real`: Multiplicative scale factor (default: 1.0, use 100 for %)
+
+# Returns
+`IRFSummary` object that displays as a formatted table. Convert to DataFrame
+with `DataFrame(summary)`.
+
+# Example
+```julia
+lp_result = lp(@formula(leads(y) ~ x), df; horizon=12)
+cov = vcov(HC1(), lp_result)
+summarize(lp_result, cov; level=0.90, scale=100)
+```
+"""
+function summarize(lp::LocalProjection, cov::LocalProjectionCovariance;
+                   term::Symbol=lp.shock, level::Real=0.95, scale::Real=1.0)
+    beta = coefpath(lp; term=term) .* scale
+    se = stderror(cov; term=term) .* scale
+    z = quantile(Normal(), 0.5 + level / 2)
+    lower = beta .- z .* se
+    upper = beta .+ z .* se
+
+    IRFSummary(term, Float64(level), Float64(scale),
+               collect(0:lp.horizon), beta, se, lower, upper)
+end
+
+"""
+    summarize(lp, estimator; term=lp.shock, level=0.95, scale=1.0) -> IRFSummary
+
+Convenience method that computes vcov internally before creating summary table.
+
+# Example
+```julia
+summarize(lp_result, HC1(); scale=100, level=0.90)
+```
+"""
+function summarize(lp::LocalProjection, estimator::CovarianceMatrices.AbstractAsymptoticVarianceEstimator;
+                   term::Symbol=lp.shock, level::Real=0.95, scale::Real=1.0)
+    cov = vcov(estimator, lp)
+    summarize(lp, cov; term=term, level=level, scale=scale)
+end
+
 # ============================================================================
 # Plot Recipes using RecipesBase
 # ============================================================================
@@ -997,7 +1137,7 @@ end
 Internal wrapper type for dispatching plot recipes on LocalProjection with covariance.
 Users should call `plot(lp, cov; ...)` or `plot(lp, estimator; ...)` directly.
 """
-struct IRFPlot{M<:LinearModel, E}
+struct IRFPlot{M<:OLSMatrixEstimator, E}
     lp::LocalProjection{M}
     cov::LocalProjectionCovariance{E}
     term::Symbol
@@ -1097,7 +1237,7 @@ end
 
 @testitem "cumul transformation" tags=[:cumul, :core] begin
     using LocalProjections
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data
     n = 100
@@ -1140,7 +1280,7 @@ end
 @testitem "leads transformation" tags=[:leads, :core] begin
     using LocalProjections
     using LocalProjections: _lead_to_float64
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data
     n = 100
@@ -1184,7 +1324,7 @@ end
 
 @testitem "anchor function syntax" tags=[:anchor, :core] begin
     using LocalProjections
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data with both y and z
     n = 100
@@ -1226,7 +1366,7 @@ end
 
 @testitem "anchor pipe syntax" tags=[:anchor, :core] begin
     using LocalProjections
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data
     n = 100
@@ -1312,7 +1452,7 @@ end
 
 @testitem "cumulative anchor (nested)" tags=[:nested, :anchor, :cumul] begin
     using LocalProjections
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data
     n = 100
@@ -1354,7 +1494,7 @@ end
 
 @testitem "nested log transformations" tags=[:nested, :core] begin
     using LocalProjections
-    using DataFrames, StatsModels, GLM, Test
+    using DataFrames, StatsModels, Regress, StatsBase, Test
 
     # Create simple synthetic data (positive values for log)
     n = 100
@@ -1422,6 +1562,53 @@ end
         # Use relative tolerance for large values
         @test lp_coef ≈ manual_coef rtol=1e-10
     end
+end
+
+@testitem "summarize function" tags=[:summarize, :api] begin
+    using LocalProjections
+    using DataFrames, StatsModels, Test
+    using CovarianceMatrices: HC1
+
+    n = 100
+    df = DataFrame(x = randn(n), y = randn(n))
+    lp_result = lp(@formula(leads(y) ~ x), df; horizon=5)
+    cov = LocalProjections.vcov(HC1(), lp_result)
+
+    # Test basic summarize returns IRFSummary
+    summary_obj = summarize(lp_result, cov)
+    @test summary_obj isa IRFSummary
+    @test length(summary_obj.horizon) == 6  # horizons 0-5
+    @test summary_obj.horizon == collect(0:5)
+    @test summary_obj.term == :x
+    @test summary_obj.level == 0.95
+
+    # Test conversion to DataFrame
+    summary_df = DataFrame(summary_obj)
+    @test summary_df isa DataFrame
+    @test nrow(summary_df) == 6
+    @test names(summary_df) == ["horizon", "coef", "se", "lower", "upper"]
+
+    # Test with scale
+    summary_scaled = summarize(lp_result, cov; scale=100)
+    @test summary_scaled.coef ≈ summary_obj.coef .* 100
+    @test summary_scaled.scale == 100.0
+
+    # Test with estimator directly
+    summary_direct = summarize(lp_result, HC1())
+    @test summary_direct.coef ≈ summary_obj.coef atol=1e-10
+
+    # Test confidence bounds are sensible (lower < coef < upper when se > 0)
+    for i in 1:length(summary_obj.horizon)
+        if summary_obj.se[i] > 0
+            @test summary_obj.lower[i] < summary_obj.coef[i] < summary_obj.upper[i]
+        end
+    end
+
+    # Test different confidence level
+    summary_90 = summarize(lp_result, cov; level=0.90)
+    @test summary_90.level == 0.90
+    # 90% CI should be narrower than 95% CI
+    @test all(summary_90.upper .- summary_90.lower .< summary_obj.upper .- summary_obj.lower)
 end
 
 

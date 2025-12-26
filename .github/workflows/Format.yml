@@ -1,10 +1,11 @@
 name: Format
 
 on:
+  pull_request:
   push:
     branches:
       - main
-  pull_request:
+      - master
 
 jobs:
   format:
@@ -14,19 +15,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
-          version: '1'
+          version: "1"
       - name: Install JuliaFormatter
-        run: julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
+        run: |
+          julia -e 'using Pkg; Pkg.add("JuliaFormatter")'
       - name: Format check
         run: |
           julia -e '
-            using JuliaFormatter
-            result = format(".", verbose=true)
-            if result
-              println("Formatting check passed!")
+          using JuliaFormatter
+          # Format src/ and test/ directories
+          result = format(".", verbose=true)
+          if result
+              println("All files are formatted correctly\!")
               exit(0)
-            else
-              println("Formatting check failed. Please run JuliaFormatter locally.")
+          else
+              println("Some files need formatting. Run locally:")
+              println("  julia -e ''using JuliaFormatter; format(\".\")''")
               exit(1)
-            end
+          end
           '
