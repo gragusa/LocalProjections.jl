@@ -26,7 +26,7 @@ jobs:
           # Format src/ and test/ directories
           result = format(".", verbose=true)
           if result
-              println("All files are formatted correctly\!")
+              println("All files are formatted correctly!")
               exit(0)
           else
               println("Some files need formatting. Run locally:")
